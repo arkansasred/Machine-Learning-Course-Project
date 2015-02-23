@@ -1,0 +1,81 @@
+---
+title: "Predicting Weight Movements from Physical Sensors"
+author: "Josh Oberman"
+date: "February 22, 2015"
+output: html_document
+---
+
+#Predicting Weight Lift Types from Physical Sensors
+
+The following is an attempt to use machine learning to predict different classes of weight movement based on gyroscope and accelerometer data from a weightlifter's arm, forearm, belt, and the dumbbell itself.
+
+We'll start off by reading in the data
+
+```{r}
+trainData<-read.csv("pml-training.csv", na.strings = c("", " ", NA))
+str(trainData)
+```
+
+The above indicates potential NA values in a lot of columns.  We're going to subset out all columns that have more than half of their observed values as "NA" using dplyr.  Then we're going to remove the first seven columns, since they contain data not pertinent to our interest i.e. user name, timestamps, etc. We only care about the sensor data with a small proportion of NAs
+
+```{r}
+library(dplyr);
+trainData_tbl<-tbl_df(trainData)
+#get proportion of NAs for each observation in training data set
+NA_proportions<-trainData_tbl%>%
+    summarise_each(funs(sum(is.na(.)) / length(.)))
+#set all columns with an NA proportion > 0.5 to "NA"
+NA_proportions<-sapply(NA_proportions, function(x){if(x<0.5){x}else{x=NA}})
+#now subset full training data set to variables of interest
+NA_proportions<-NA_proportions[!is.na(NA_proportions)]
+nonNA<-names(NA_proportions)
+trainData<-trainData[,nonNA]
+trainData<-trainData[,8:60]
+```
+
+###Splitting the data
+
+Now, we'll split this training data we have in to training and test sets
+
+```{r}
+library(caret)
+inTrain<-createDataPartition(y = trainData$classe, p = 0.7, list = FALSE)
+training<-trainData[inTrain,]
+testing<-trainData[-inTrain,]
+```
+
+This data is still very high-dimensional, so I am not going to try to visualize it here.  However, it seems a reasonable assumption to assume that there are many correlated variables here, since the general movement of the arms, forearm, etc. all in concert with eachother will produce correlations between the categories.  A quick check for high correlating variables will confirm this
+
+```{r}
+cors<-abs(cor(training[,-53]))
+diag(cors)<-0
+which(cors>0.8, arr.ind = TRUE)
+```
+
+Since there are a large number of high correlating variables in our dataset, it is reasonable to assume that principal components analysis will be effective in compressing the data and reducing noise.  So, we'll use principal components analysis from the training set and apply it to both training and test sets
+
+```{r}
+preProc<-preProcess(trainData[,-53], method = "pca")
+trainPC<-predict(preProc, training[,-53])
+testPC<-predict(preProc, testing[,-53])
+```
+
+I'm going to fit a random forest model to the training data. I know that this method will likely yield very high accuracy due to it's general robustness.  This was also one of the only methods I could use on the data that didn't take my computer extremely long to compute :-/.  I would have liked to have performed more model fits, and to have used cross-validation for my random forest model, but unfortunately I did not have the time or computing power.
+
+```{r}
+library(randomForest)
+fit<-randomForest(training$classe~., data=trainPC)
+confusionMatrix(testing$classe, predict(fit, testPC))
+```
+
+The confusion matrix indicates very high accuracy.  To get a more condensed assesment of the model accuracy that can be used to estimate the out of sample error rate, we'll calculate the area under the ROC curve using the AUC package.
+
+```{r}
+library(AUC)
+x<-roc(predictions = predict(fit, testPC), labels = testing$classe)
+auc(x)
+```
+
+The area under the ROC curve is > .98.  This means we will likely have a relatively low out of sample error rate, unless drastic overfitting is occuring.
+
+This is the model I've come up with! It far outperformed the only other model I was able to successfully train: Linear Discriminant Analysis.  All other models took my computer too long to be feasible, and I've excluded the other explorations from this analysis.
